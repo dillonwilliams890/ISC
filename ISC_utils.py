@@ -4,9 +4,9 @@ Created on Wed May 18 15:13:39 2022
 
 @author: will6605
 """
-#%%  
+#%%   
 import cv2 as cv
-from tracker_red import *
+from tracker2024 import *
 import numpy as np
 import pandas as pd
 import h5py
@@ -24,19 +24,24 @@ import statsmodels.api as sm
 import warnings
 from scipy.ndimage import uniform_filter1d
 from PIL import Image
-# import keras
-# from tensorflow.keras.models import Sequential
-# from tensorflow.keras.layers import Dense, Dropout, Activation, Flatten, Conv2D, MaxPooling2D
-# from PIL import Image
-# from tensorflow.keras.applications import ResNet50
-# from tensorflow.keras.layers import Dense, Flatten, GlobalAveragePooling2D, BatchNormalization
-# from sklearn.metrics import confusion_matrix, classification_report
-# import pathlib
-# from tensorflow.keras.optimizers import Adam
-# import ipyplot
-# import tables
+import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, Activation, Flatten, Conv2D, MaxPooling2D
+from PIL import Image
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.layers import Dense, Flatten, GlobalAveragePooling2D, BatchNormalization
+from sklearn.metrics import confusion_matrix, classification_report
+import pathlib
+from tensorflow.keras.optimizers import Adam
+import ipyplot
+import tables
+from numpy import diff
+from scipy.interpolate import UnivariateSpline
 #%%
 
+def KV(x, s,v): # Kelvin voigt fit
+    return (s/2)*(x[0]**2-1/(x[0]**2))+(2*v/x[0])*(x[1])
+    # return (s/2)*(x[0]**2-1)*(x[0]**2+1/x[0]**4)+(2*v/x[0])*(x[1])
 
 def read_h5(file):
      with h5py.File(file, 'r') as f:
@@ -106,7 +111,7 @@ def get_roi(file):
     cv.destroyAllWindows()
     return [r1, r2, r3]
 
-#Object tracking function that finds cells and passes info on their contours, location, and the saturation
+# Object tracking function that finds cells and passes info on their contours, location, and the saturation
 #@profile
 def track(file, r1, r2, r3, oxy):
     raw = h5py.File(file, 'r')
@@ -174,22 +179,31 @@ def track(file, r1, r2, r3, oxy):
                 #Normalize the frame with control frames
                 if LED[p]>LED[p-1]:
                     light = True
-                    img=(roi/control_430)      
+                    img=(roi-control_430) 
+                    img_sat=(roi/control_430) 
+                    a=255    
                 else:
                     light = False
-                    img=(roi/control_410)      
-            mimg=(100*img)
+                    img=(roi-control_410) 
+                    img_sat=(roi/control_410) 
+                    a=255     
+            
+            # mimg=(a-img)
             # mimg=np.zeros_like(img)
             # mimg=cv.normalize(img,  mimg, 0, 255, cv.NORM_MINMAX)
-            im = mimg.astype(np.uint8)
-            mask = object_detector.apply(im)
-            mask = cv.GaussianBlur(mask, (5, 5), 0)
+            # im = mimg.astype(np.uint8)
+            # bkg = object_detector.apply(im)
+            # gauss = cv.GaussianBlur(im, (5, 5), 0)
+            im=255-img 
+            im = img.astype(np.uint8)
+            _, mask = cv.threshold(im, 200, 255, cv.THRESH_OTSU + cv.THRESH_BINARY)
             kernel = np.ones((9,9),np.uint8)
-            mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel)
-            _, mask = cv.threshold(mask, 0, 255, cv. THRESH_OTSU + cv.THRESH_BINARY)
+            opening = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel)
+            closing = cv.morphologyEx(opening, cv.MORPH_CLOSE, kernel)
+            
             # thresh= 255 - mask
-            thresh=mask
-            contours, _ = cv.findContours(thresh, cv.RETR_EXTERNAL ,cv.CHAIN_APPROX_SIMPLE) 
+            # thresh=mask
+            contours, _ = cv.findContours(closing, cv.RETR_EXTERNAL ,cv.CHAIN_APPROX_SIMPLE) 
             detections = []
             
             #Loop through the contours found in the image and record the ones of cells
@@ -197,7 +211,7 @@ def track(file, r1, r2, r3, oxy):
                 # Calculate area and remove small elements
                 area = cv.contourArea(cnt)
                 x, y, w, h = cv.boundingRect(cnt)   
-                if area > 400 and area < 3000 and x>r2[0]-50:
+                if area > 400 and area < 4000 and x>r2[0]-50 and len(cnt)>5:
                     #Get perimiter and area to calculate circularity
                     hull = cv.convexHull(cnt)
                     perimeter = cv.arcLength(hull, True)  
@@ -211,6 +225,8 @@ def track(file, r1, r2, r3, oxy):
                     (cx, cy), (width, height), angle = ellipse
                     # box = cv.boxPoints(rect)
                     # box = np.int0(box)
+                    # minor=height
+                    # major=width
                     minor=min(width, height)
                     major=max(width, height)
                     #(xx,yy),(minor,major),angle = cv.fitEllipse(cnt)
@@ -236,7 +252,7 @@ def track(file, r1, r2, r3, oxy):
                 # cimg = np.zeros_like(img)
                 vol[id]=np.add(vol[id], area)
                 #Put a box around the cell
-                Hb=(img[int(cy-20):int(cy+20), int(cx-20):int(cx+20)])
+                Hb=(img_sat[int(cy-20):int(cy+20), int(cx-20):int(cx+20)])
                 # print(cx)
                 if len(Hb)>20 and area>400 and cx>40:
                 #     hb_mask=np.zeros_like(Hb)
@@ -275,7 +291,7 @@ def track(file, r1, r2, r3, oxy):
                 Md=(e*d-b*f)/(a*d-b*c)
 
                 #Record saturation is cell is the the roi
-                if np.max(vol)>3000:
+                if np.max(vol)>4000:
                     saturation=10000
                     Hgb=-1
                 elif cx < int(r1[2]+r1[0]) and cx > int(r2[0]) and abs(Mo) > 0 and abs(Md) > 0:
@@ -306,12 +322,12 @@ def track(file, r1, r2, r3, oxy):
                 #Save circularity, saturation, area, and location for a given cell tagged to it's specific id
                 deform.append([oxy, id, circ, cx, p, area, saturation, cell_img, Hgb, major, minor, angle, w, h])
                 
-            ## For debugging ###
+            # # For debugging ###
             #     EI=w/h
             #     # cv.putText(roi, str(id), (x, y), cv.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
             #     # box = cv.boxPoints(rect) # cv2.cv.BoxPoints(rect) for OpenCV <3.x
             #     # box = int(box)
-            #     # cv.ellipse(roi, ellipse, (255, 255, 255), 2)
+            #     cv.ellipse(roi, ellipse, (255, 255, 255), 2)
             #     # rminor = min(width, height) / 2
             #     # xtop = cx + math.cos(math.radians(angle)) * rminor
             #     # ytop = cy + math.sin(math.radians(angle)) * rminor
@@ -329,9 +345,9 @@ def track(file, r1, r2, r3, oxy):
     # cv.destroyAllWindows()
     return deform
 
+
 #This function takes the cell info from previous function and calculates paramaters, not going to comment too much since it basically just puts info from previous function into dataframes
 def shape(deform, r1, r2, r3, oxy):
-    # print(deform)
     value=[]
     df = pd.DataFrame (deform, columns = ['oxy', 'cell', 'circ', 'cx','time','area','saturation','cell_img','hemoglobin', 'major', 'minor', 'angle', 'w', 'h'])
     cells = {k: v for k, v in df.groupby('cell')}
@@ -340,9 +356,8 @@ def shape(deform, r1, r2, r3, oxy):
     for i in range(len(cells)):
         tau=0
         tau_v=0
-        dub = False
         sat=[]
-        hgb=[]
+        dub = False
         rest=[]
         squeeze=[]
         squeezemajor=[]
@@ -352,29 +367,33 @@ def shape(deform, r1, r2, r3, oxy):
         recoveryminor=[]
         tau=np.nan
         tauparm=[]
-        major=[]
-        minor=[]
+        Lmajor=[]
+        Lminor=[]
         dx=[]
         dt=[]
-        vx=[]
-        EI=[]
-        deg=[]
+        ux=[]
+        x=[]
+        t=[]
+        y=[]
+        Dij=[]
         tauEID=[]
         time=[]
         start_deform=[]
+        cell_shear=[]
         cell_steady=[]
         transit=[]
         angle=[]
         location=[]
+        major=[]
+        minor=[]
+        EI=[]
         images=[]
+        deg=[]
         for index, c in cells[i].iterrows():
             if c['saturation']>10:
                 dub=True
-            # elif c['saturation']>-0.8 and c['saturation']<1.5:
-            #     sat.append(c['saturation'])
-                
-            if c['hemoglobin']>-0.5 and c['hemoglobin']<1.5:
-                hgb.append(c['hemoglobin'])
+            # if c['hemoglobin']>-0.5 and c['hemoglobin']<1.5:
+            #     hgb.append(c['hemoglobin'])
             if c['cx'] > int(r1[0]+r1[2]): #not using this one right now
                 rest.append(c['circ'])
             if c['cx'] > int(r1[0]) and c['cx'] < int(r1[0]+r1[2]-20) and c['saturation']>-0.8: #add circulatiry and EI if the cell was in the squeeze section
@@ -390,6 +409,13 @@ def shape(deform, r1, r2, r3, oxy):
                 recoveryminor.append(c['minor'])
                 angle.append(c['angle'])
                 sat.append(c['saturation'])
+            # if c['cx'] < int(r1[0]+r1[2]/3) and c['cx'] > int(r2[0]) and c['saturation']>-0.8: #add circularity and EI if cell was after squeeze
+            if  c['cx'] > int(r2[0]) and c['cx'] < int(r1[0]+r1[2]-20): #add circularity and EI if cell was after squeeze
+                tauparm.append(c['circ'])
+                Lmajor.append(c['major'])
+                Lminor.append(c['minor'])
+                dt.append(c['time'])
+                dx.append(c['cx'])
             if np.isnan(c['cell_img']).any() == False and c['cx'] < int(r2[0]+r2[2]) and c['cx'] > int(r2[0]):
                 images.append(c['cell_img'])
             if c['cx'] < int(r1[0]+20) and c['cx'] > int(r1[0]-120) and c['saturation']>-0.8: #add circularity and EI if cell was right after squeeze
@@ -400,7 +426,6 @@ def shape(deform, r1, r2, r3, oxy):
                 time.append(c['time'])
                 deg.append(c['angle'])
         if  dub==False and len(squeeze) >= 4 and len(recovery) >=5 and len(sat)>=5 and len(images)>4 and len(major)>1: #make sure cell was sampled enough to give good data
-            #R=sum(rest)/np.count_nonzero(rest)
             if np.mean(images[-1])>np.mean(images):
                 cell_im430=images[-1]
                 cell_im410=images[-2]
@@ -410,59 +435,71 @@ def shape(deform, r1, r2, r3, oxy):
             cell_image430 = cv.normalize(cell_im430, None, 0, 255, norm_type=cv.NORM_MINMAX)
             cell_image410 = cv.normalize(cell_im410, None, 0, 255, norm_type=cv.NORM_MINMAX)
             cell_image3=cell_image430/2+cell_image410/2
+            #R=sum(rest)/np.count_nonzero(rest)
             D=np.median(squeeze)
             Rc=np.median(recovery)
             D_Rc=abs(D-Rc) #calculate change in circularity
             majorD=np.median(squeezemajor)
             minorD=np.median(squeezeminor)
-            majorI=np.min(major)
-            # minorI=np.median(Iminor)
             majorRC=np.median(recoverymajor)
             minorRC=np.median(recoveryminor)
-            # majorRC=np.min(recoverymajor)
-            # minorRC=np.max(recoveryminor)
             degrees=np.median(angle) 
-            #calculate taylor deformation
-            # if D_Rc < 0.06: #If low deformation then major and semimajor axis stay correct, undo axis switch
-            # EII=((majorI/2)-(minorI/2))/((majorI/2)+(minorI/2))
-            EID=((majorD/2)-(minorD/2))/((majorD/2)+(minorD/2))
-            EIRC=((majorRC/2)-(minorRC/2))/((majorRC/2)+(minorRC/2))
-            # EII=np.min(tauparm)
-            # EII = np.min(tauparm[tauparm != np.min(tauparm)])
-            # eo=EID-EIRC
-            # einf=EIRC
-            Ta=abs(EID-EIRC)
-            e=0
             diff = np.diff(deg)
             change=max(abs(diff))
             ext=np.max(EI)-np.min(EI)
-            # major=uniform_filter1d(major, size=3)
-            if Ta< 0.15:
-                if ext>0.4 and change>25:  #If low deformation then major and semimajor axis stay correct, undo axis switch
+            saturation=np.median(sat)
+            #calculate taylor deformation
+            # if D_Rc < 0.06: #If low deformation then major and semimajor axis stay correct, undo axis switch
+            EID=((majorD/2)-(minorD/2))/((majorD/2)+(minorD/2))
+            EIRC=((majorRC/2)-(minorRC/2))/((majorRC/2)+(minorRC/2))
+            eo=EID-EIRC
+            einf=EIRC
+            Ta=abs(EID-EIRC)
+            if Ta< 0.1:
+                if ext>0.8:# and change>20:  #If low deformation then major and semimajor axis stay correct, undo axis switch
                     EIRC=((minorRC/2)-(majorRC/2))/((majorRC/2)+(minorRC/2))
                     Ta=abs(EID-EIRC)
                     e=1
-                elif  ext>0.3 and change>35:   #If low deformation then major and semimajor axis stay correct, undo axis switch
+                elif  ext>0.5 and D_Rc>0.01:   #If low deformation then major and semimajor axis stay correct, undo axis switch
                     EIRC=((minorRC/2)-(majorRC/2))/((majorRC/2)+(minorRC/2))
                     Ta=abs(EID-EIRC)
                     e=1
                 else:
                     Ta = Ta
                     e=0
-            speed=-140*(10**-6)*(location[-1]-location[0])/(transit[-1]-transit[0])
+            # if len(tauminor) > 15:
+            for j in range(len(dx)-1):
+                ux.append(-140*(10**-6)*(dx[j+1]-dx[j]))
+                x.append(-dx[j]*(0.014*10**-6))
+                t.append(j/1000)
+                lamb=Lmajor[j]/majorRC
+                y.append(lamb)
+                Dij.append(((Lmajor[j]/2)-(Lminor[j]/2))/((Lmajor[j]/2)+(Lminor[j]/2)))
+            #shear modulus calc
+            mu=0.00826 #[kg/m-s]
+            u=-140*(location[-1]-location[0])/(transit[-1]-transit[0]) #[um/s]
+            w_d=majorD*.14 #[um]
+            h_d=minorD*.14 #[um]
+            w_rc=majorRC*.14 #[um]
+            h_rc=minorRC*.14 #[um]
+            thick=0.05 #[um]
+            l=(w_d-w_rc)
+            d=7.76-h_d
+            d=.5
+            shear=mu*(u/(d)) #[N/m^2]
+            gamma=(np.arctan(l/(h_d/2)))
+            G=thick*(shear/gamma) #[uN/m]
+            poisson=0.5
+            E=2*(shear/gamma)*(1+poisson)
+            speed=u*(10**-6)
             # area=.0196*cell_steady
-            area=.0196*(np.median(cell_steady))
+            area_shear=.0196*(np.median(cell_shear))
+            area_steady=.0196*(np.median(cell_steady))
+            e=(area_shear-area_steady)/area_steady
             #w=sum(width)/np.count_nonzero(width)
-            satu=np.median(sat)
-            # hemo=np.median(hgb)
             # e=2*(np.sqrt(area/np.pi))/(6.5) #confinment parameter
-            # e=time
-            # Ca=(speed*(10**-6))*5750
-            # e=abs(majorD-majorRC)
-            # speed=abs(minorD-minorRC)
             label=[]
-            ext=np.max(EI)-np.min(EI)
-            value.append([oxy,D_Rc,Ta,area,speed,e,change,satu,cell_image3, label, majorD, majorI, majorRC,ext])
+            value.append([oxy,D_Rc,Ta,area_steady,u,l,cell_image3,ext,x, t, y, ux, Dij,w_rc, saturation,label])
     return value
 
 #this function normalizes based on cell width
@@ -483,16 +520,17 @@ def fractions(data, cluster):
     LPF=[]
     data3['sat_norm']=(data3['saturation']-np.mean(data3.loc[data3['oxy'] == 0]['saturation']))
     data3['sat_norm']=(data3['sat_norm'])/np.mean((data3.loc[data3['oxy'] == 21]['sat_norm']))    
-    # data3['sat_norm']=data3['saturation']
+    data3['sat_norm']=data3['saturation']
     SO2=[np.mean((data3.loc[data3['oxy'] == 0]['sat_norm'])),np.mean((data3.loc[data3['oxy'] == 2]['sat_norm'])),np.mean((data3.loc[data3['oxy'] == 3]['sat_norm'])),np.mean((data3.loc[data3['oxy'] == 4]['sat_norm'])),np.mean((data3.loc[data3['oxy'] == 5]['sat_norm'])),np.mean((data3.loc[data3['oxy'] == 7]['sat_norm'])),np.mean((data3.loc[data3['oxy'] == 12]['sat_norm'])),np.mean((data3.loc[data3['oxy'] == 21]['sat_norm']))]
     # print(SO2)
     #data3['def']=data3['Ta']/(data3['area']*data3['speed'])
-    data3 = data3[data3['Ta'] < 0.55]
+    data3 = data3[data3['Ta'] < 0.5]
     data3 = data3[data3['Ta'] >= 0]
     data3 = data3[data3['sat_norm'] < 1.1]
     data3['D'] = data3['Ta']
+    print(len(data3))
     oxy=[0,2,3,4,5,7,12,21]
-    # oxy=[21]
+    # oxy=[0]
     N=len(oxy)
     LPF = []
     num_polys=[]
@@ -501,9 +539,9 @@ def fractions(data, cluster):
     solys = pd.DataFrame()
     sort=pd.DataFrame()
     for i in range(len(oxy)):
-        df = data3.loc[data3['oxy'] == oxy[i]][['oxy','D','sat_norm','area','speed','cell_img3','label']]
+        # df = data3.loc[data3['oxy'] == oxy[i]][['oxy','D','sat_norm','area','speed','cell_img3','label']]
+        df = data3.loc[data3['oxy'] == oxy[i]][['oxy','D', 'Ta','sat_norm','area','speed', 'EI','x', 't', 'y', 'ux', 'Dij','majorRC','cell_img3','label']]
         data = data3.loc[data3['oxy'] == oxy[i]][['Ta','sat_norm']]
-
         # Convert DataFrame to matrix
         mat = data.values
         # Using sklearn
@@ -551,16 +589,17 @@ def fractions(data, cluster):
         SO2pstd=[np.std((polys.loc[polys['oxy'] == 0]['sat_norm'])),np.std((polys.loc[polys['oxy'] == 2]['sat_norm'])),np.std((polys.loc[polys['oxy'] == 3]['sat_norm'])),np.std((polys.loc[polys['oxy'] == 4]['sat_norm'])),np.std((polys.loc[polys['oxy'] == 5]['sat_norm'])),np.std((polys.loc[polys['oxy'] == 7]['sat_norm'])),np.std((polys.loc[polys['oxy'] == 12]['sat_norm'])),1]
         oxys = oxy
         oxyp= oxy
-        p50t=P50(oxy,SO2)
+        # p50t=P50(oxy,SO2)
         soly_nans = np.isnan(SO2s)
         SO2s=[d for (d, remove) in zip(SO2s, soly_nans) if not remove]
         oxys=[d for (d, remove) in zip(oxys, soly_nans) if not remove]
         poly_nans = np.isnan(SO2p)
         SO2p=[d for (d, remove) in zip(SO2p, poly_nans) if not remove]
         oxyp=[d for (d, remove) in zip(oxyp, poly_nans) if not remove]
-        p50s=P50(oxys,SO2s)
-        p50p=P50(oxyp,SO2p)
-        p50=[p50s, p50p, p50t]
+        # p50s=P50(oxys,SO2s)
+        # p50p=P50(oxyp,SO2p)
+        # p50=[p50s, p50p, p50t]
+        p50=[]
         sort=pd.concat([polys,solys])
         for i in range(len(oxy)):
             if len(sort.loc[sort['oxy'] == oxy[i]].loc[sort['sort'] ==0]) > 0:
@@ -598,163 +637,114 @@ def anaylsis(path, oxygens, files):
     for i in range(len(oxygens)):
         value=process(path+files[i], roi[i], oxygens[i])
         data=data+value
-    datas = pd.DataFrame (data, columns = ['oxy', 'D_Rc', 'Ta', 'area','speed','e','angle','saturation','cell_img3','label','majorD', 'majorI', 'majorRC','EI'])
+    datas = pd.DataFrame (data, columns = ['oxy', 'D_Rc', 'Ta', 'area','speed','l','cell_img3','EI','x', 't', 'y', 'ux', 'Dij','majorRC', 'saturation','label'])  
     datas = datas[np.abs(datas['saturation']-datas['saturation'].mean()) <= (2*datas['saturation'].std())]    
     return datas
 
-#Enter paths to speific videos and run program
-#%%
-path=('D:/IRSC/20240507_UMN030/')  
-# path=('C:/Users/will6605/Documents/SingleCell/20230117_CHC038/')
-oxygens =['0','2','3','4','5','7','12','21']
-files =['data0.h5','data2.h5','data3.h5', 'data4.h5', 'data5.h5', 'data7.h5', 'data12.h5', 'data21.h5']
+def strain(df, p0):
+    def fit(x,y,ux,t,majorRC):
+        popt=[]
+        if len(x)>10:# and y[-1]<y[1]:
+            # plt.plot(t, x)
+            # plt.show()
+            correct=np.min(y)
+            # blur = [i * 150 for i in ux]
+            # # blur=[i / majorRC for i in blur]
+            x =[-1 *i for i in x]
+            y =[i / correct for i in y]
+            # x=-1*x
+            x=np.flip(x)
+            ux=np.flip(ux)
+            y=np.flip(y)
+            data = {'x': x[0:-2],'t': t[0:-2], 'u': ux[0:-2],  'y': y[0:-2], }
+            df = pd.DataFrame(data)
+            # df=df.loc[df['y'] <3]
+            # df=df.loc[df['y'] >0.5]
+            # df=df.rolling(4).mean()
+            df=df.loc[df['x']<9e-6]
+            df=df.loc[df['x']>2.5e-6]
+            # print(df)
+            # df=df.loc[df['t']>0.008]
+            # df=df.loc[df['t']<0.015]
+            df.reset_index(drop=True, inplace=True)
 
-# oxygens =['2','2','4','4','6','6','12','12','21','21']
-# files =[ 'data02.h5', 'data02_2.h5','data015.h5', 'data015_2.h5', 'data01.h5', 'data01_2.h5', 'data005.h5', 'data005_2.h5','data00.h5','data00_2.h5']
-
-
-data=anaylsis(path, oxygens, files) 
-data3=data.copy(deep=True)
-#%% 
-clusters=[3,3,3,3,3,3,1,1]
-# data2=data.copy(deep=True)
-# clusters=[3]
-# clusters=[1,1,1,1,1,1,1,1]
-data3['oxy'] = data3['oxy'].astype(int)
-data3, sort, SO2, LPF, polys, solys, SO2s, SO2p, p50, SO2sstd, SO2pstd, num_polys, num_solys = fractions(data3, clusters) 
-# data3 = data3[~data3.groupby('oxy')['sat_norm'].apply(is_outlier)]
-#%%
-# sort=pd.read_hdf('IRSC/Data/20231005_CHC069_sorted.h5', 'data')  
-SO2=[np.mean((sort.loc[sort['oxy'] == 0]['sat_norm'])),np.mean((sort.loc[sort['oxy'] == 2]['sat_norm'])),np.mean((sort.loc[sort['oxy'] == 3]['sat_norm'])),np.mean((sort.loc[sort['oxy'] == 4]['sat_norm'])),np.mean((sort.loc[sort['oxy'] == 5]['sat_norm'])),np.mean((sort.loc[sort['oxy'] == 7]['sat_norm'])),np.mean((sort.loc[sort['oxy'] == 12]['sat_norm'])),np.mean((sort.loc[sort['oxy'] == 21]['sat_norm']))]
-oxymm=[0, 15, 23, 30, 38, 53, 91, 160]
-p50=P50(oxymm,SO2)
-oxy=[0,2,3,4,5,7,12,21]
-num_polys=[]
-num_solys=[]
-LPF = []
-for i in range(len(oxy)):
-            if len(sort.loc[sort['oxy'] == oxy[i]].loc[sort['sort'] ==0]) > 0:
-                LPF.append(len(sort.loc[sort['oxy'] == oxy[i]].loc[sort['sort'] ==0])/len(sort.loc[sort['oxy'] == oxy[i]]))
-                num_polys.append(len(sort.loc[sort['oxy'] == oxy[i]].loc[sort['sort'] ==0]))
-                num_solys.append(len(sort.loc[sort['oxy'] == oxy[i]].loc[sort['sort'] ==1]))
+            # ts = np.linspace(df['t'].values[0], df['t'].values[-1], 100)
+            # splx = UnivariateSpline(df['t'], df['x'],s=.001)
+            # splu = UnivariateSpline(df['t'], df['u'],s=.001) 
+            # sply = UnivariateSpline(df['t'], df['y'],s=.005)
+            # dudx=diff(df['u'])/diff(df['x'])
+            # dydt=diff(sply(ts))/diff(ts)
+            # plt.plot(t, y,'ro')
+            # plt.plot(ts, sply(ts),'b')
+            # # splu.set_smoothing_factor(0.5)
+            # # plt.plot(ts, splu(ts),'g')
+            # plt.show()
+            coef = np.polyfit(df['t'], df['y'],1)
+            poly1d_fn = np.poly1d(coef)
+            lamb=poly1d_fn(df['t'])
+            df.loc[range(len(lamb)),'lamb'] = lamb
+            dudx=diff(df['u'])/diff(df['x'])
+            dydt=diff(df['lamb'])/diff(df['t'])
+            df.loc[range(len(dudx)),'dudx'] = dudx
+            df.loc[range(len(dydt)),'dydt'] = dydt
+            if df.dydt.mean()<0:
+                popt=[np.nan,np.nan]
             else:
-                LPF.append(0)
-oxymm=[0, 15, 23, 30, 38, 53, 91, 160]
-AUC=np.trapz(LPF,x=oxymm)
-print(p50)
-print(AUC)
-# %%
-df = sort.loc[sort['oxy'] == 0].loc[sort['sort'] == 1]['D']
-df1 = sort.loc[sort['oxy'] == 2].loc[sort['sort'] == 1]['D']
-df2 = sort.loc[sort['oxy'] == 3].loc[sort['sort'] == 1]['D']
-df3 = sort.loc[sort['oxy'] == 4].loc[sort['sort'] == 1]['D']
-df4 = sort.loc[sort['oxy'] == 5].loc[sort['sort'] == 1]['D']
-df5 = sort.loc[sort['oxy'] == 7].loc[sort['sort'] == 1]['D']
-df.reset_index(drop=True, inplace=True)
-df1.reset_index(drop=True, inplace=True)
-df2.reset_index(drop=True, inplace=True)
-df3.reset_index(drop=True, inplace=True)
-df4.reset_index(drop=True, inplace=True)
-df5.reset_index(drop=True, inplace=True)
-polysp=pd.concat([df,df1,df2,df3,df4,df5], ignore_index=True, axis=1)
-polysp.to_clipboard(sep=',', index=False)  
-# %%
-#%%
-######################################
-# data3.to_csv(r'C:/Users/will6605/Documents/SingleCell/Data2/20221026_CHC026.csv',index=False)
-# data3 = pd.read_csv('C:/Users/will6605/Documents/SingleCell/Data2/20220930_CHC060.csv')
-oxy=[0,2,3,4,5,7,12,21]
-for i in (oxy):
-    print(np.mean(sort['Ta'].loc[sort['oxy'] == i]))
-
-
-#%%
-for index,c in data2.iterrows():
-    A = data2.cell_img3[index].astype(int)
-    im = Image.fromarray(A)
-    im.save(f'CNN/dataset/soly2/20221012_MGH1689_{index}.jpeg', 'JPEG')
-#%%
-# data21.cell_img=data3.cell_img430/2+data3.cell_img410/2
-# solylow=solys.loc[solys.oxy<10]
-for index,c in data.iterrows():
-    img = np.zeros([100,100,3])
-    img[:,:,0] = c.cell_img3
-    img[:,:,1] = c.cell_img3
-    img[:,:,2] = c.cell_img3
-    A=img.astype(int)
-    filename = 'CNN/dataset_mask/soly/20231013_MGH1909_%d.jpeg'%index
-    cv.imwrite(filename, A)
-
-#%%
-# data.to_hdf('Mouse/Data/20240404_StJSS.h5', key='data', mode='w')  
-sort.to_hdf('Mouse/Data/20240404_StJSS_sorted.h5', key='data', mode='w')  
-# data=pd.read_hdf('Mouse/Data/20240404_StJSS.h5', 'data')  
-
-#%%
-LABELS = ["poly", "soly"] #these are the two labels to classify to
-
-IMG_SIZE = 100 #image isze is 100x100
-
-model=keras.models.load_model('CNN/model5.h5', safe_mode=False) #load the model
-#%%
-count=1
-threshold=0.5 #threshol is set at 0.5 to start
-sort['pred'] = np.nan #set the predicitin column to nan to start
-oxy=[0,2,3,4,5,7,12,21] # List you oxygen tensions
-for i in range(len(oxy)): #run through the list of oxygen tensions
-    df = sort.loc[sort['oxy'] == oxy[i]] #make a dataframe of each individual O2 (helps with speed)
-    for index,c in df.iterrows(): #run through the dataframe
-        img = np.zeros([100,100,3]) #CNN was trained on 3d images
-        img[:,:,0] = c.cell_img3
-        img[:,:,1] = c.cell_img3
-        img[:,:,2] = c.cell_img3
-        new_img = cv.resize(img, (IMG_SIZE, IMG_SIZE))
-        new_shape = new_img.reshape(-1, IMG_SIZE, IMG_SIZE, 3)
-        predictions = model.predict(new_shape) #this is the line that calls the CNN to classify
-        # plt.figure(count)
-        # plt.imshow(new_img)
-        print(predictions) #print the %prediciton
-        print(LABELS[np.argmax(predictions)]) #Print the accosicated label
-        sort.label[index]=(np.argmax(np.where(predictions > threshold, 1, 0))) #add the correct label to the origina dataframe
-        sort.pred[index]=predictions[0][1] #add the correct prediction % to dataframe (you can use this column to adjust threshold without rerunning CNN)
-        # print(count)
-        count +=1
-    # try:
-    #     img_array=img
-    #     # img_array = cv.imread(os.path.join(TESTDIR, img))
-    #     new_img = cv.resize(img_array, (IMG_SIZE, IMG_SIZE))
-    #     new_shape = new_img.reshape(-1, IMG_SIZE, IMG_SIZE, 3)
-    #     predictions = model.predict(new_shape)
-    #     # plt.figure(count)
-    #     # plt.imshow(new_img)
-    #     print(predictions)
-    #     print(LABELS[np.argmax(predictions)])
-    #     # im = Image.fromarray(new_img)
-    #     data.e[index]=(np.where(predictions > threshold, 1, 0))
-    #     count +=1
-    # except Exception as e:
-    #     pass
-
-
-
-# %%
-df=sort.loc[sort['oxy'] >10]
-df=df.loc[df['sat_norm']>0.8]
-
-cell_preds=df.sort_values(['pred']).reset_index(drop=True)
-images = cell_preds['cell_img3']
-labels = cell_preds['pred'].round(3).values
-
-ipyplot.plot_images(images, labels,max_images=500, img_width=50)
-#%%
-oxy=[0,2,3,4,5,7,12,21]
-for i in range(len(oxy)):
-    df = sort.loc[sort['oxy'] == oxy[i]]
-    df.plot.scatter('D', 'sat_norm', c='label', colormap='gist_rainbow') 
-# %%
-solysn=solys.loc[solys['D'] >.15]
-print(solysn.D.mean())
-# print(polys.D.mean())
-print(df.loc[df['label']==1]['D'].mean())
-print((len(df.loc[df['label']==0]['D']))/(len(df)))
-# %%
+            # df['dudxm'] = df['dudx'].rolling(window=3).mean()
+            # df['dydtm'] = df['dydt'].rolling(window=3).mean()
+            # df.dudx.rolling(5).mean()
+            # rolling_mean = df['dudx'].rolling(window=3).mean()
+                df=df.rolling(4).mean()
+                df=df.dropna()
+                # df.reset_index(drop=True, inplace=True)
+                # spline = df.interpolate(method='spline', order=3, s=10)
+                # df=df.loc[df['x']<5e-6]
+                # df=df.loc[df['x']>2.5e-6]
+                # df=df.loc[df['t']>0.008]
+                # df=df.loc[df['t']<0.015]
+                # print(df)
+                # print(spline)
+                # plt.plot(t[3:],dydt)
+                # plt.show()
+                # u=uniform_filter1d(ux, size=5)   
+                # dudx=diff(ux)/diff(x)
+                # dudx=uniform_filter1d(dudx, size=10)
+                # y=uniform_filter1d(y, size=7)
+                # dydt=diff(y)/diff(t)
+                # dydt=uniform_filter1d(dydt, size=10)
+                mu=0.00826 #[kg/m-s]
+                A=136*10**-12
+                majorRC=majorRC*10**-6
+                # print(majorRC)
+                # print(df['t'].values[-1])
+                T=(3*A*mu*df['dudx'])/majorRC
+                # plt.plot(df['t'], df['x'])
+                # plt.show()
+                # plt.plot(df['t'], df['u'])
+                # plt.show()
+                # plt.plot(df['t'], df['lamb'])
+                # plt.show()
+                # plt.plot(df['t'], df['dudx'])
+                # plt.show()
+                # plt.plot(df['t'], df['dydt'])
+                # plt.show()
+                # plt.plot(df['t'], T)
+                # plt.show()
+                # T=T[3:-5]
+                # print(df['y'])
+                x_data=[df['y'], df['dydt']]
+                param_bounds=([1e-8,1e-9],[np.inf,2e-5])
+                # if np.isinf(T).any() == False and np.isinf(y).any()== False and np.isinf(dydt).any()== False:
+                try:
+                    popt, pcov = curve_fit(KV, x_data, T, p0=p0,bounds=param_bounds)
+                    # print(y)
+                    # plt.plot(x_data[0], T)
+                    # plt.show()
+                    # plt.plot(x_data[0], KV(x_data, *popt))
+                    # plt.show()
+                    # print(popt*10**6)
+                except RuntimeError:
+                    print("Error - curve_fit failed")
+        return popt
+    df['params'] = df.apply(lambda row: fit(row['x'], row['y'],row['ux'],row['t'],row['majorRC']), axis=1)
+    return df
